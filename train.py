@@ -17,6 +17,7 @@ import datasets.sun397
 import datasets.caltech101
 import datasets.ucf101
 import datasets.imagenet
+import datasets.hico
 
 import datasets.imagenet_sketch
 import datasets.imagenetv2
@@ -27,8 +28,10 @@ import trainers.coop
 import trainers.cocoop
 import trainers.zsclip
 import trainers.maple
+import trainers.maple_hico
 import trainers.independentVL
 import trainers.vpt
+import trainers.vpt2
 
 def print_args(args, cfg):
     print("***************")
@@ -75,6 +78,8 @@ def reset_cfg(cfg, args):
     if args.head:
         cfg.MODEL.HEAD.NAME = args.head
 
+    cfg.crop_scale = args.crop_scale
+    
 
 def extend_cfg(cfg):
     """
@@ -109,6 +114,14 @@ def extend_cfg(cfg):
     cfg.TRAINER.MAPLE.PROMPT_DEPTH = 9 # Max 12, minimum 0, for 1 it will act as shallow MaPLe (J=1)
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
 
+    # Config for MaPLe_HICO
+    cfg.TRAINER.MAPLE_HICO = CN()
+    cfg.TRAINER.MAPLE_HICO.N_CTX = 2  # number of context vectors
+    cfg.TRAINER.MAPLE_HICO.CTX_INIT = "a photo of a"  # initialization words
+    cfg.TRAINER.MAPLE_HICO.PREC = "fp16"  # fp16, fp32, amp
+    cfg.TRAINER.MAPLE_HICO.PROMPT_DEPTH = 1 # Max 12, minimum 0, for 1 it will act as shallow MaPLe (J=1)
+    cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+
     # Config for independent Vision Language prompting (independent-vlp)
     cfg.TRAINER.IVLP = CN()
     cfg.TRAINER.IVLP.N_CTX_VISION = 2  # number of context vectors at the vision branch
@@ -127,6 +140,15 @@ def extend_cfg(cfg):
     cfg.TRAINER.VPT.PREC = "fp16"  # fp16, fp32, amp
     cfg.TRAINER.VPT.PROMPT_DEPTH_VISION = 1  # if set to 1, will represent shallow vision prompting only
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+    
+    cfg.TRAINER.VPT2 = CN()
+    cfg.TRAINER.VPT2.N_CTX_VISION = 2  # number of context vectors at the vision branch
+    cfg.TRAINER.VPT2.CTX_INIT = "a photo of a"  # initialization words
+    cfg.TRAINER.VPT2.PREC = "fp16"  # fp16, fp32, amp
+    cfg.TRAINER.VPT2.PROMPT_DEPTH_VISION = 1  # if set to 1, will represent shallow vision prompting only
+    cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+    
+    cfg.crop_scale = 1.0
 
 
 def setup_cfg(args):
@@ -223,6 +245,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--no-train", action="store_true", help="do not call trainer.train()"
+    )
+    parser.add_argument(
+        "--crop-scale", type=float, default=1.0, help="scale of region to be cropped"
     )
     parser.add_argument(
         "opts",

@@ -339,14 +339,14 @@ class Transformer(nn.Module):
         self.layers = layers
         # Implements respective encoder blocks for a given design choice
         current_trainer = design_details['trainer']
-        if current_trainer == 'IVLP' or current_trainer == 'VPT':
+        if current_trainer == 'IVLP' or current_trainer == 'VPT' or current_trainer == 'VPT2':
             self.resblocks = nn.Sequential(*[ResidualAttentionBlock_IVLP(width, heads, attn_mask, True,
                                                                          text_layer, i,
                                                                          design_details) if prompts_needed > i
                                              else ResidualAttentionBlock_IVLP(width, heads, attn_mask, False,
                                                                               text_layer, i, design_details)
                                              for i in range(layers)])
-        elif current_trainer == 'MaPLe':
+        elif current_trainer == 'MaPLe' or current_trainer == 'MaPLe_HICO':
             self.resblocks = nn.Sequential(
                 *[ResidualAttentionBlock_MaPLe(width, heads, attn_mask, design_details, text_layer, i)
                   for i in range(layers)])
@@ -476,6 +476,127 @@ class VisionTransformer_MaPLe(nn.Module):
         return x
 
 
+class VisionTransformer_MaPLe_HICO(nn.Module):
+    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int,
+                 design_details):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.output_dim = output_dim
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        self.VPT_shallow = True
+        scale = width ** -0.5
+        self.class_embedding = nn.Parameter(scale * torch.randn(width))
+        self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
+        self.ln_pre = LayerNorm(width)
+        # hyper-parameter if need to add prompt embeddings inside to the input
+        # of transformer block or not:
+        self.prompt_till_layer_visual = 0
+        self.transformer = Transformer(width, layers, heads, design_details=design_details)
+
+        self.ln_post = LayerNorm(width)
+        self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
+
+    def forward(self, x: torch.Tensor, shared_ctx, compound_deeper_prompts):
+        x = self.conv1(x)  # shape = [*, width, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat(
+            [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
+             x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.positional_embedding.to(x.dtype)
+
+        # After positional embeddings, we will attach prompts with the model, remember only those
+        # are trainable parameters here in whole image encoder.
+        if self.VPT_shallow:
+            visual_ctx = shared_ctx.expand(x.shape[0], -1, -1).half()
+            x = torch.cat([x, visual_ctx], dim=1)
+        else:
+            assert self.prompt_till_layer_visual == 0
+
+        # Normal code as before
+        x = self.ln_pre(x)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        # Again combine the inputs, so nn.sequential can work
+        outputs = self.transformer([x, compound_deeper_prompts, 0])  # third argument is counter
+        x = outputs[0]
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        ctx_output = self.ln_post(x[:, x.shape[1]-visual_ctx.shape[0]:, :].mean(dim=1))
+        x = self.ln_post(x[:, 0, :])
+
+        if self.proj is not None:
+            x = x @ self.proj
+            ctx_output = ctx_output @ self.proj
+
+        return x, ctx_output
+
+
+class VisionTransformer_VPT2(nn.Module):
+    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int,
+                 output_dim: int, design_details):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.output_dim = output_dim
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=width, kernel_size=patch_size, stride=patch_size, bias=False)
+        if design_details["vision_depth"] == 0:
+            self.VPT2_shallow = False
+        else:
+            self.VPT2_shallow = True
+        if self.VPT2_shallow:
+            # Add v2isual prompt tokens here
+            n_ctx = design_details["vision_ctx"]  # hyperparameter
+            ctx_vectors = torch.empty(n_ctx, width)
+            nn.init.normal_(ctx_vectors, std=0.02)
+            self.VPT2 = nn.Parameter(ctx_vectors)
+            # self.VPT2.half()
+        scale = width ** -0.5
+        self.class_embedding = nn.Parameter(scale * torch.randn(width))
+        self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
+        self.ln_pre = LayerNorm(width)
+        # hyper-parameter if need to add prompt embeddings inside to the input
+        # of transformer block or not:
+        self.prompt_till_layer_visual = design_details["vision_depth"]
+        self.transformer = Transformer(width, layers, heads, prompts_needed=self.prompt_till_layer_visual,
+                                       design_details=design_details)
+
+        self.ln_post = LayerNorm(width)
+        self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
+
+    def forward(self, x: torch.Tensor):
+        x = self.conv1(x)  # shape = [*, width, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
+        x = torch.cat(
+            [self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device),
+             x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = x + self.positional_embedding.to(x.dtype)
+
+        # After positional embeddings, we will attach prompts with the model, remember only those
+        # are trainable parameters here in whole image encoder.
+        if self.VPT2_shallow:
+            visual_ctx = self.VPT2.expand(x.shape[0], -1, -1).half()
+            x = torch.cat([x, visual_ctx], dim=1)
+        else:
+            assert self.prompt_till_layer_visual == 0
+
+        # Normal code as before
+        x = self.ln_pre(x)
+
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+
+        ctx_output = self.ln_post(x[:, x.shape[1]-visual_ctx.shape[0]:, :].mean(dim=1))
+        x = self.ln_post(x[:, 0, :])
+
+        if self.proj is not None:
+            x = x @ self.proj
+            ctx_output = ctx_output @ self.proj
+
+        return x, ctx_output
+    
+
 class CLIP(nn.Module):
     def __init__(self,
                  embed_dim: int,
@@ -510,6 +631,26 @@ class CLIP(nn.Module):
             vision_heads = vision_width // 64
             if trainer == "MaPLe":
                 self.visual = VisionTransformer_MaPLe(
+                    input_resolution=image_resolution,
+                    patch_size=vision_patch_size,
+                    width=vision_width,
+                    layers=vision_layers,
+                    heads=vision_heads,
+                    output_dim=embed_dim,
+                    design_details=design_details
+                )
+            elif trainer == "MaPLe_HICO":
+                self.visual = VisionTransformer_MaPLe_HICO(
+                    input_resolution=image_resolution,
+                    patch_size=vision_patch_size,
+                    width=vision_width,
+                    layers=vision_layers,
+                    heads=vision_heads,
+                    output_dim=embed_dim,
+                    design_details=design_details
+                )
+            elif trainer == "VPT2":
+                self.visual = VisionTransformer_VPT2(
                     input_resolution=image_resolution,
                     patch_size=vision_patch_size,
                     width=vision_width,

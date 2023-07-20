@@ -1,4 +1,3 @@
-# Deep vision prompting
 DATALOADER:
   TRAIN_X:
     BATCH_SIZE: 4
@@ -15,8 +14,8 @@ INPUT:
 
 OPTIM:
   NAME: "sgd"
-  LR: 0.0025
-  MAX_EPOCH: 5
+  LR: 0.0026
+  MAX_EPOCH: 2
   LR_SCHEDULER: "cosine"
   WARMUP_EPOCH: 1
   WARMUP_TYPE: "constant"
@@ -30,8 +29,8 @@ MODEL:
     NAME: "ViT-B/16"
 
 TRAINER:
-  VPT:
-    N_CTX_VISION: 8
+  MAPLE:
+    N_CTX: 2
     CTX_INIT: "a photo of a"
     PREC: "fp16"
-    PROMPT_DEPTH_VISION: 1
+    PROMPT_DEPTH: 3

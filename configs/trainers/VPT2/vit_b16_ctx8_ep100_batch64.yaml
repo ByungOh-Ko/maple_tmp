@@ -1,7 +1,7 @@
 # Deep vision prompting
 DATALOADER:
   TRAIN_X:
-    BATCH_SIZE: 4
+    BATCH_SIZE: 64
   TEST:
     BATCH_SIZE: 100
   NUM_WORKERS: 8
@@ -16,7 +16,7 @@ INPUT:
 OPTIM:
   NAME: "sgd"
   LR: 0.0025
-  MAX_EPOCH: 5
+  MAX_EPOCH: 100
   LR_SCHEDULER: "cosine"
   WARMUP_EPOCH: 1
   WARMUP_TYPE: "constant"
@@ -25,12 +25,15 @@ OPTIM:
 TRAIN:
   PRINT_FREQ: 20
 
+TEST:
+  EVALUATOR: "Classification"
+
 MODEL:
   BACKBONE:
     NAME: "ViT-B/16"
 
 TRAINER:
-  VPT:
+  VPT2:
     N_CTX_VISION: 8
     CTX_INIT: "a photo of a"
     PREC: "fp16"
